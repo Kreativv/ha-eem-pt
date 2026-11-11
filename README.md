@@ -23,6 +23,7 @@ long-term statistics for the Energy Dashboard, in total and per meter register.
 - two read-only sensors with `consumption_date` and `reading_date` attributes;
 - four external statistics: `eem_online:<contract>_consumption` (total) and
   `eem_online:<contract>_consumption_vazio`, `_ponta`, `_cheias` (registers 1 to 3);
+- cost statistics including VAT for Vazio, Ponta and Cheias, and a fixed-charges source;
 - the `eem_online.import_history` action to rebuild the statistics from a start date.
 
 Fifteen-minute samples, billing, prices, production, export, one entry managing multiple
@@ -73,6 +74,23 @@ the total; never add the total and the registers together. The Energy
 Dashboard uses the imported historical statistic; the latest-daily-consumption sensor
 is only a compact status view. The meter-reading sensor is also for display only and
 must not be added as a second consumption source.
+
+### Costs
+
+The integration also imports cost statistics in EUR: `eem_online:<contract>_cost_vazio`,
+`_cost_ponta` and `_cost_cheias`, and `_cost_fixed` for the fixed charges. Select each
+cost statistic as **Use an entity tracking the total costs** for its register source.
+The fixed charges get their own grid source, `eem_online:<contract>_fixed_charges`, which
+always reports 0 kWh, so they appear in the dashboard's costs without adding energy.
+
+Costs follow the itemization of the EEM invoice: the active energy price of each period,
+the reduced VAT rate (4 %) on 200 kWh per 30 days shared by the periods in proportion to
+their consumption, the normal rate (22 %) on the rest, and IEC at 0.001 EUR/kWh plus
+22 %. The fixed charges are the contracted power per day plus 22 %, the operation fee of
+0.08 EUR per month plus 22 % and the audiovisual contribution of 2.85 EUR per month plus
+4 %, spread over the days of the month. The price table in `coordinator/tariffs.py`
+covers one contract type: RAM, BTN tri-horária, 6.9 kVA. Add a dated entry when ERSE
+publishes new prices and run **Import history** to recalculate.
 
 ### Import history
 
