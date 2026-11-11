@@ -48,20 +48,23 @@ async def async_handle_import_history(
             translation_placeholders={"error": str(err)},
         ) from err
 
-    results = await async_import_readings(hass, contract, readings, today)
-    if not results:
+    summary = await async_import_readings(hass, contract, readings, today)
+    if not summary.registers:
         raise HomeAssistantError(
             translation_domain=DOMAIN,
             translation_key="import_history_empty",
             translation_placeholders={"start": start.isoformat()},
         )
     return {
-        key: {
-            "first_day": result.first_day.isoformat(),
-            "last_day": result.last_day.isoformat(),
-            "days": result.days,
-            "first_reading": result.first_reading,
-            "last_reading": result.last_reading,
-        }
-        for key, result in results.items()
+        "registers": {
+            key: {
+                "first_day": result.first_day.isoformat(),
+                "last_day": result.last_day.isoformat(),
+                "days": result.days,
+                "first_reading": result.first_reading,
+                "last_reading": result.last_reading,
+            }
+            for key, result in summary.registers.items()
+        },
+        "costs_eur": dict(summary.costs),
     }
