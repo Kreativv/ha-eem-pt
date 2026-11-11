@@ -8,7 +8,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.eem_online.api import EemOnlineApiClientAuthenticationError, EemOnlineApiClientCommunicationError
 from custom_components.eem_online.const import DOMAIN, MADEIRA_TIME_ZONE, MAX_HISTORY_DAYS
-from custom_components.eem_online.coordinator.statistics import EemOnlineImportResult
+from custom_components.eem_online.coordinator.statistics import EemOnlineImportResult, EemOnlineImportSummary
 from homeassistant.config_entries import SOURCE_REAUTH
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
@@ -77,27 +77,32 @@ async def test_action_imports_and_reports_each_register(
     start = _today() - timedelta(days=30)
     result = EemOnlineImportResult(start, _today() - timedelta(days=1), 30, 100.0, 400.0)
 
-    with patch(IMPORT_PATH, new_callable=AsyncMock, return_value={"total": result}) as import_readings:
+    summary = EemOnlineImportSummary(registers={"total": result}, costs={"vazio": 12.34})
+
+    with patch(IMPORT_PATH, new_callable=AsyncMock, return_value=summary) as import_readings:
         response = await _call(hass, init_integration.entry_id, start)
 
     _, fetch_start, fetch_end = mock_api_client.async_get_meter_readings.await_args.args
     assert (fetch_start, fetch_end) == (start, _today())
     import_readings.assert_awaited_once()
     assert response == {
-        "total": {
-            "first_day": start.isoformat(),
-            "last_day": (_today() - timedelta(days=1)).isoformat(),
-            "days": 30,
-            "first_reading": 100.0,
-            "last_reading": 400.0,
-        }
+        "registers": {
+            "total": {
+                "first_day": start.isoformat(),
+                "last_day": (_today() - timedelta(days=1)).isoformat(),
+                "days": 30,
+                "first_reading": 100.0,
+                "last_reading": 400.0,
+            }
+        },
+        "costs_eur": {"vazio": 12.34},
     }
 
 
 async def test_action_without_readings_fails(hass: HomeAssistant, init_integration: MockConfigEntry) -> None:
     """An empty answer is reported instead of silently importing nothing."""
     with (
-        patch(IMPORT_PATH, new_callable=AsyncMock, return_value={}),
+        patch(IMPORT_PATH, new_callable=AsyncMock, return_value=EemOnlineImportSummary(registers={}, costs={})),
         pytest.raises(HomeAssistantError) as err,
     ):
         await _call(hass, init_integration.entry_id, _today() - timedelta(days=30))

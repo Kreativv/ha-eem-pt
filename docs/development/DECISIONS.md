@@ -38,6 +38,15 @@ a jump in the cumulative sum. The `import_history` action uses the same path wit
 user-chosen start date. There is no additional Store or history cache; an interrupted
 import is retried by the next synchronization.
 
+## Costs are imported, not priced by the Energy Dashboard
+
+The Energy Dashboard only prices an energy entity through an automatically created cost
+sensor, which does not exist for external statistics, and its fixed prices cannot express
+a VAT rate that changes after 200 kWh per 30 days. The integration therefore imports one
+cost statistic per register, computed with dated prices, and a zero-energy fixed-charges
+statistic whose cost statistic carries the daily fixed charges. Costs are recomputed with
+the energy on every window rewrite and by `import_history`.
+
 ## The API client stays inside the integration
 
 The reverse-engineered API is small and uses one login plus two read endpoints. A
