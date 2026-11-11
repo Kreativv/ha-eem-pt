@@ -11,20 +11,22 @@ the Home Assistant UI.
 
 The integration polls every 12 hours. It exposes the latest available daily consumption
 and cumulative meter reading, each with its operator date as an attribute. Daily
-consumption is also imported as an external long-term statistic for the Energy Dashboard.
+consumption calculated from the cumulative meter readings is imported as external
+long-term statistics for the Energy Dashboard, in total and per meter register.
 
 ## Current scope
 
 - one EEM login and one contract per config entry;
-- daily consumption from `resumo/ultimasemana`;
-- the latest cumulative meter reading from the last 30 complete days of `leituras`;
-- a seven-day overlapping correction window;
+- the latest daily consumption from `resumo/ultimasemana` for the status sensor;
+- daily Energy statistics from the cumulative registers in `leituras`, rewritten over a
+  30-day overlapping window and reaching back up to a year after a longer outage;
 - two read-only sensors with `consumption_date` and `reading_date` attributes;
-- one external statistic: `eem_online:<contract>_consumption`.
+- four external statistics: `eem_online:<contract>_consumption` (total) and
+  `eem_online:<contract>_consumption_vazio`, `_ponta`, `_cheias` (registers 1 to 3);
+- the `eem_online.import_history` action to rebuild the statistics from a start date.
 
-Fifteen-minute samples, individual meter registers, locally retained reading history,
-billing, prices, production, export, one entry managing multiple contracts, options,
-actions, and repair flows are outside this version.
+Fifteen-minute samples, billing, prices, production, export, one entry managing multiple
+contracts, options, and repair flows are outside this version.
 
 ## Installation
 
@@ -65,10 +67,21 @@ contract as an independent integration entry with its own sensors and Energy sta
 ## Energy Dashboard
 
 Open **Settings > Dashboards > Energy**, add an electricity grid consumption source,
-and select the statistic named **EEM Online `<contract>` consumption**. The Energy
+and select the statistic named **EEM Online `<contract>` consumption**. To see the
+tariff periods separately, add the three register statistics as grid sources instead of
+the total; never add the total and the registers together. The Energy
 Dashboard uses the imported historical statistic; the latest-daily-consumption sensor
 is only a compact status view. The meter-reading sensor is also for display only and
 must not be added as a second consumption source.
+
+### Import history
+
+New installations only import the last 30 days. To import older days, open
+**Developer tools > Actions**, select **EEM Online: Import history**, choose the entry
+and a start date, and run it. EEM Online keeps about three years of meter readings. The
+action replaces the statistics from the start date onwards and returns the first and
+last imported day and register value of each statistic, which can be compared with an
+EEM invoice. Create a Home Assistant backup first.
 
 ## Data assumptions
 
@@ -80,6 +93,16 @@ but the daily-summary date semantics still need confirmation. A live, anonymized
 pagination shape; the portal labels meter readings in kWh and reports production in a
 separate field. Zero daily consumption is not imported because the weekly response does
 not prove that a zero-valued day is complete.
+
+A reading dated D is the register value at the start of D, so the consumption of D is
+the reading of D+1 minus the reading of D. Live data confirmed this: for complete days
+the differences of `totalRegistadores` match the weekly summary to the watt-hour, while
+the summary still reported partial values for the two most recent days. Days without a
+reading share the difference to the next reading evenly, and a decreasing register
+counts as zero. `totalRegistador1` to `totalRegistador3` were matched to Vazio, Ponta
+and Cheias against one tri-horária invoice. The portal's own per-period split in the
+weekly summary differs from the registers by one or two kWh per day; the registers are
+what the invoice uses.
 
 ## Development
 

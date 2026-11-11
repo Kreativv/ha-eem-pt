@@ -1,86 +1,124 @@
-"""Tests for Energy statistic synchronization."""
+"""Tests for the meter-reading Energy statistics."""
 
+from collections.abc import Mapping
 from datetime import UTC, date, timedelta
+from typing import Any
 
 import pytest
 
-from custom_components.eem_online.coordinator.statistics import async_sync_statistics, period_start, statistic_id
-from custom_components.eem_online.data import EemOnlineDailyConsumption
+from custom_components.eem_online.coordinator.statistics import (
+    async_import_readings,
+    async_last_imported_day,
+    period_start,
+    statistic_id,
+)
 from homeassistant.components.recorder import Recorder
-from homeassistant.components.recorder.statistics import get_last_statistics
+from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.recorder import get_instance
 
-
-def _day(day: date, value: float) -> EemOnlineDailyConsumption:
-    return EemOnlineDailyConsumption(day, period_start(day), value)
+CONTRACT = "456"
 
 
-async def _wait_for_statistics(hass: HomeAssistant, recorder: Recorder) -> None:
+def _readings(start: date, values: list[float], field: str = "totalRegistadores") -> list[Mapping[str, Any]]:
+    return [
+        {"data": f"{(start + timedelta(days=offset)).isoformat()}T00:00:00", field: value}
+        for offset, value in enumerate(values)
+    ]
+
+
+async def _wait(hass: HomeAssistant, recorder: Recorder) -> None:
     await hass.async_block_till_done()
     await hass.async_add_executor_job(recorder.block_till_done)
 
 
-async def test_idempotent_corrections_and_gap_fill(recorder_mock: Recorder, hass: HomeAssistant) -> None:
-    """Reimports replace periods and recalculate every later sum in the window."""
-    contract = "456"
-    first = [_day(date(2026, 9, 1), 1), _day(date(2026, 9, 3), 3)]
-    await async_sync_statistics(hass, contract, date(2026, 9, 1), first)
-    await _wait_for_statistics(hass, recorder_mock)
-    await async_sync_statistics(hass, contract, date(2026, 9, 1), first)
-    await _wait_for_statistics(hass, recorder_mock)
-    await async_sync_statistics(
+async def _rows(hass: HomeAssistant, key: str = "") -> list[dict[str, Any]]:
+    stat_id = statistic_id(CONTRACT, key)
+    result = await get_instance(hass).async_add_executor_job(
+        statistics_during_period,
         hass,
-        contract,
-        date(2026, 9, 1),
-        [_day(date(2026, 9, 2), 2), _day(date(2026, 9, 3), 2.5)],
-    )
-    await _wait_for_statistics(hass, recorder_mock)
-
-    stats = await get_instance(hass).async_add_executor_job(
-        get_last_statistics,
-        hass,
-        3,
-        statistic_id(contract),
-        False,
+        period_start(date(2025, 1, 1)),
+        None,
+        {stat_id},
+        "hour",
+        None,
         {"state", "sum"},
     )
-    rows = sorted(stats[statistic_id(contract)], key=lambda row: row["start"])
-    assert [row["state"] for row in rows] == pytest.approx([1, 2, 2.5])
-    assert [row["sum"] for row in rows] == pytest.approx([1, 3, 5.5])
+    return [dict(row) for row in sorted(result.get(stat_id, []), key=lambda row: row["start"])]
 
 
-async def test_sum_continues_after_long_gap_and_full_correction_window(
+async def test_import_is_idempotent_and_reports_the_imported_range(
+    recorder_mock: Recorder, hass: HomeAssistant
+) -> None:
+    """Importing the same readings twice gives the same rows and sums."""
+    readings = _readings(date(2026, 1, 1), [100.0, 101.0, 103.0, 106.0])
+
+    for _ in range(2):
+        results = await async_import_readings(hass, CONTRACT, readings, date(2026, 1, 4))
+        await _wait(hass, recorder_mock)
+
+    rows = await _rows(hass)
+    assert [row["start"] for row in rows] == [period_start(date(2026, 1, day)).timestamp() for day in (1, 2, 3)]
+    assert [row["state"] for row in rows] == pytest.approx([1, 2, 3])
+    assert [row["sum"] for row in rows] == pytest.approx([1, 3, 6])
+    total = results["total"]
+    assert (total.first_day, total.last_day, total.days) == (date(2026, 1, 1), date(2026, 1, 3), 3)
+    assert (total.first_reading, total.last_reading) == (100.0, 106.0)
+    assert await async_last_imported_day(hass, CONTRACT) == date(2026, 1, 3)
+
+
+async def test_reimport_continues_from_the_row_before_it(recorder_mock: Recorder, hass: HomeAssistant) -> None:
+    """A later window rewrites its days on top of the sum stored before them, without a jump."""
+    await async_import_readings(
+        hass, CONTRACT, _readings(date(2026, 1, 1), [100.0, 110.0, 120.0, 130.0]), date(2026, 2, 1)
+    )
+    await _wait(hass, recorder_mock)
+
+    await async_import_readings(hass, CONTRACT, _readings(date(2026, 1, 3), [120.0, 125.0, 131.0]), date(2026, 2, 1))
+    await _wait(hass, recorder_mock)
+
+    rows = await _rows(hass)
+    assert [row["state"] for row in rows] == pytest.approx([10, 10, 5, 6])
+    assert [row["sum"] for row in rows] == pytest.approx([10, 20, 25, 31])
+
+
+async def test_backfill_replaces_older_rows_and_keeps_sums_monotonic(
     recorder_mock: Recorder,
     hass: HomeAssistant,
 ) -> None:
-    """A long missing period remains a gap without resetting the cumulative sum."""
-    contract = "456"
-    base_day = date(2026, 1, 1)
-    window_start = date(2026, 2, 1)
-    await async_sync_statistics(hass, contract, base_day, [_day(base_day, 10)])
-    await _wait_for_statistics(hass, recorder_mock)
+    """Importing history before existing rows rewrites them so the cumulative sum never drops."""
+    await async_import_readings(hass, CONTRACT, _readings(date(2026, 3, 10), [500.0, 505.0, 512.0]), date(2026, 4, 1))
+    await _wait(hass, recorder_mock)
 
-    full_window = [_day(window_start + timedelta(days=offset), 1) for offset in range(7)]
-    await async_sync_statistics(hass, contract, window_start, full_window)
-    await _wait_for_statistics(hass, recorder_mock)
-    await async_sync_statistics(hass, contract, window_start, [_day(window_start + timedelta(days=3), 2)])
-    await _wait_for_statistics(hass, recorder_mock)
+    history = _readings(date(2026, 3, 7), [480.0, 490.0, 495.0, 500.0, 505.0, 512.0])
+    await async_import_readings(hass, CONTRACT, history, date(2026, 4, 1))
+    await _wait(hass, recorder_mock)
 
-    stats = await get_instance(hass).async_add_executor_job(
-        get_last_statistics,
-        hass,
-        8,
-        statistic_id(contract),
-        False,
-        {"state", "sum"},
-    )
-    rows = sorted(stats[statistic_id(contract)], key=lambda row: row["start"])
-    assert [row["start"] for row in rows] == pytest.approx(
-        [period_start(base_day).timestamp(), *(period_start(day.day).timestamp() for day in full_window)]
-    )
-    assert [row["state"] for row in rows] == pytest.approx([10, 1, 1, 1, 2, 1, 1, 1])
-    assert [row["sum"] for row in rows] == pytest.approx([10, 11, 12, 13, 15, 16, 17, 18])
+    rows = await _rows(hass)
+    assert [row["state"] for row in rows] == pytest.approx([10, 5, 5, 5, 7])
+    assert [row["sum"] for row in rows] == pytest.approx([10, 15, 20, 25, 32])
+
+
+async def test_registers_get_their_own_statistics(recorder_mock: Recorder, hass: HomeAssistant) -> None:
+    """Every register that EEM reports becomes a separate statistic."""
+    readings = [
+        {"data": "2026-01-01T00:00:00", "totalRegistadores": 10.0, "totalRegistador1": 4.0, "totalRegistador3": 6.0},
+        {"data": "2026-01-02T00:00:00", "totalRegistadores": 13.0, "totalRegistador1": 5.0, "totalRegistador3": 8.0},
+    ]
+
+    results = await async_import_readings(hass, CONTRACT, readings, date(2026, 1, 2))
+    await _wait(hass, recorder_mock)
+
+    assert set(results) == {"total", "vazio", "cheias"}
+    assert [row["state"] for row in await _rows(hass, "vazio")] == pytest.approx([1])
+    assert [row["state"] for row in await _rows(hass, "cheias")] == pytest.approx([2])
+    assert await _rows(hass, "ponta") == []
+
+
+def test_statistic_ids_keep_the_existing_total_id() -> None:
+    """The total keeps the ID existing Energy dashboards already use."""
+    assert statistic_id("456") == "eem_online:456_consumption"
+    assert statistic_id("456", "vazio") == "eem_online:456_consumption_vazio"
 
 
 def test_madeira_dst_period_starts_are_hour_aligned() -> None:

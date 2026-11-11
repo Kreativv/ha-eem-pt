@@ -8,5 +8,10 @@
         "default": "mdi:meter-electric"
       }
     }
+  },
+  "services": {
+    "import_history": {
+      "service": "mdi:database-import"
+    }
   }
 }

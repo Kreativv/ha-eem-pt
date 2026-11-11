@@ -59,6 +59,21 @@
     },
     "update_failed": {
       "message": "Unable to update EEM Online data."
+    },
+    "entry_not_found": {
+      "message": "The selected EEM Online entry does not exist."
+    },
+    "entry_not_loaded": {
+      "message": "The selected EEM Online entry is not loaded."
+    },
+    "invalid_start_date": {
+      "message": "The start date must be between {oldest} and {latest}."
+    },
+    "import_history_failed": {
+      "message": "Unable to fetch EEM meter readings: {error}"
+    },
+    "import_history_empty": {
+      "message": "EEM Online returned no meter readings since {start}."
     }
   },
   "entity": {
@@ -68,6 +83,22 @@
       },
       "meter_reading": {
         "name": "Meter reading"
+      }
+    }
+  },
+  "services": {
+    "import_history": {
+      "name": "Import history",
+      "description": "Rebuilds the Energy statistics of an EEM contract from its daily meter readings, starting at the given date. Existing statistics from that date onwards are replaced.",
+      "fields": {
+        "config_entry_id": {
+          "name": "EEM Online entry",
+          "description": "The EEM contract whose history to import."
+        },
+        "start_date": {
+          "name": "Start date",
+          "description": "First day to import. EEM Online keeps about three years of meter readings."
+        }
       }
     }
   }

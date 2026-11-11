@@ -15,6 +15,7 @@ from custom_components.eem_online.const import (
     DOMAIN,
     LOGGER,
     MADEIRA_TIME_ZONE,
+    MAX_GAP_FILL_DAYS,
     METER_READING_WINDOW_DAYS,
     UPDATE_INTERVAL,
 )
@@ -24,14 +25,14 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .statistics import async_sync_statistics, period_start
+from .statistics import async_import_readings, async_last_imported_day, period_start
 
 if TYPE_CHECKING:
     from custom_components.eem_online.data import EemOnlineConfigEntry
 
 
 class EemOnlineDataUpdateCoordinator(DataUpdateCoordinator[EemOnlineCoordinatorData]):
-    """Fetch EEM data and keep Energy statistics synchronized."""
+    """Fetch EEM data and keep the meter-reading Energy statistics synchronized."""
 
     config_entry: EemOnlineConfigEntry
 
@@ -55,7 +56,7 @@ class EemOnlineDataUpdateCoordinator(DataUpdateCoordinator[EemOnlineCoordinatorD
         self._contract = contract
 
     async def _async_update_data(self) -> EemOnlineCoordinatorData:
-        """Fetch EEM data, normalize it, and update long-term statistics."""
+        """Fetch EEM data, normalize it, and update long-term statistics from the meter readings."""
         previous = self.data
         latest_day = previous.latest_day if previous else None
         latest_consumption = previous.latest_consumption if previous else None
@@ -66,16 +67,15 @@ class EemOnlineDataUpdateCoordinator(DataUpdateCoordinator[EemOnlineCoordinatorD
 
         today = dt_util.now(MADEIRA_TIME_ZONE).date()
         correction_window_start = today - timedelta(days=CORRECTION_WINDOW_DAYS)
-        meter_readings_end = today - timedelta(days=1)
-        meter_readings_start = meter_readings_end - timedelta(days=METER_READING_WINDOW_DAYS - 1)
+        meter_readings_end = today
+        meter_readings_start = await self._async_meter_readings_start(today)
 
         try:
             payload = await self._client.async_get_weekly_summary(self._contract)
             fresh = _normalize_consumption(payload, correction_window_start, today)
-            merged = await async_sync_statistics(self.hass, self._contract, correction_window_start, fresh)
-            if merged:
-                latest_day = merged[-1].day
-                latest_consumption = merged[-1].value
+            if fresh:
+                latest_day = fresh[-1].day
+                latest_consumption = fresh[-1].value
             else:
                 latest_day = None
                 latest_consumption = None
@@ -96,6 +96,7 @@ class EemOnlineDataUpdateCoordinator(DataUpdateCoordinator[EemOnlineCoordinatorD
             latest_reading = _normalize_meter_reading(readings, meter_readings_start, meter_readings_end)
             if latest_reading is not None:
                 latest_meter_day, latest_meter_reading = latest_reading
+            await async_import_readings(self.hass, self._contract, readings, meter_readings_end)
         except EemOnlineApiClientAuthenticationError as err:
             raise ConfigEntryAuthFailed(
                 translation_domain=DOMAIN,
@@ -122,6 +123,14 @@ class EemOnlineDataUpdateCoordinator(DataUpdateCoordinator[EemOnlineCoordinatorD
             summary_available=summary_error is None,
             meter_readings_available=meter_readings_error is None,
         )
+
+    async def _async_meter_readings_start(self, today: date) -> date:
+        """Overlap the last month, or reach back to the newest imported day after a longer outage."""
+        start = today - timedelta(days=METER_READING_WINDOW_DAYS)
+        last_imported = await async_last_imported_day(self.hass, self._contract)
+        if last_imported is None or last_imported >= start:
+            return start
+        return max(last_imported, today - timedelta(days=MAX_GAP_FILL_DAYS))
 
 
 def _normalize_consumption(

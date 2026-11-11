@@ -1,18 +1,21 @@
 # Decisions
 
-## Daily summary is the only MVP consumption source
+## Energy consumption comes from the meter registers
 
-The integration fetches `resumo/ultimasemana` every 12 hours. Fifteen-minute samples
-would add pagination, completeness rules, DST interval handling, and more requests
-without being needed for daily Energy reporting.
+Originally the daily summary was the only consumption source and meter readings were
+display-only. Live data showed that `resumo/ultimasemana` reports partial values for the
+most recent days (5.4 and 8.0 kWh where the registers show 25.4 and 24.3 kWh), and those
+partial values were written into the Energy history. For complete days both sources
+agree to the watt-hour. The cumulative registers in `leituras` are complete one day
+earlier, cover about three years, and carry the per-period registers the invoice uses,
+so they now feed the statistics. The summary still feeds the latest-daily-consumption
+sensor. Fifteen-minute samples remain out of scope for the reasons given before:
+pagination, completeness rules, DST interval handling and more requests.
 
-## Meter readings are display-only
-
-The same 12-hour coordinator fetches the last 30 complete Madeira days from `leituras`
-and exposes only the newest valid `totalRegistadores`. The sensor has no `state_class`:
-its delayed operator date cannot be represented by the current entity-state timestamp,
-so it must not create a second Energy history. The integration retains no local reading
-history and does not calculate consumption deltas.
+The meter-reading sensor stays display-only without a `state_class`: its delayed
+operator date cannot be represented by the current entity-state timestamp, so it must
+not create a second Energy history. No local reading history is kept; the recorder's
+statistics are the only state.
 
 Summary and meter-reading failures are tracked separately. Either source may update on
 its own; only failure of both makes the coordinator update fail. Authentication failure
@@ -25,13 +28,15 @@ Historical daily values are imported as
 `sum` equal to cumulative known consumption. Writing old days as the current state of a
 sensor would give recorder the wrong timestamps and would not backfill Energy history.
 
-## Corrections use a seven-day overlapping window
+## Corrections rewrite a 30-day overlapping window
 
-Every update merges the weekly EEM values with the recorder's existing window,
-preserves days omitted from an incomplete response, recalculates all sums after a
-changed day, and upserts the complete window. Absolute rows make an identical retry
-idempotent. There is no additional Store or history cache; an interrupted import is
-retried by the next synchronization.
+Every update fetches the readings from 30 days ago, or from the newest imported day after
+a longer outage (bounded to one year), turns them into daily differences, and upserts
+every day from the first fetched reading onwards on top of the sum of the last row
+before it. Absolute rows make an identical retry idempotent, and a rewrite never leaves
+a jump in the cumulative sum. The `import_history` action uses the same path with a
+user-chosen start date. There is no additional Store or history cache; an interrupted
+import is retried by the next synchronization.
 
 ## The API client stays inside the integration
 

@@ -2,7 +2,7 @@
 
 from datetime import date, timedelta
 from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -11,7 +11,7 @@ from custom_components.eem_online.api import (
     EemOnlineApiClientAuthenticationError,
     EemOnlineApiClientCommunicationError,
 )
-from custom_components.eem_online.const import MADEIRA_TIME_ZONE, METER_READING_WINDOW_DAYS
+from custom_components.eem_online.const import MADEIRA_TIME_ZONE, MAX_GAP_FILL_DAYS, METER_READING_WINDOW_DAYS
 from custom_components.eem_online.coordinator.base import (
     EemOnlineDataUpdateCoordinator,
     _normalize_consumption,
@@ -94,16 +94,23 @@ async def test_summary_succeeds_when_meter_readings_fail(
     mock_api_client: AsyncMock,
     mock_statistics: AsyncMock,
 ) -> None:
-    """A readings error leaves Energy data available."""
+    """A readings error leaves the daily summary available but imports no statistics."""
+    yesterday = dt_util.now(MADEIRA_TIME_ZONE).date() - timedelta(days=1)
+    mock_api_client.async_get_weekly_summary.return_value = {
+        "consumos": [
+            {"data": yesterday.isoformat(), "consumoCheias": 1.0, "consumoVazio": 2.0, "consumoPonta": 0.5},
+        ],
+    }
     mock_api_client.async_get_meter_readings.side_effect = EemOnlineApiClientCommunicationError("offline")
 
     data = await _refresh(_coordinator(hass, config_entry, mock_api_client))
 
     assert data.summary_available
     assert not data.meter_readings_available
+    assert data.latest_day == yesterday
     assert data.latest_consumption == 3.5
     assert data.latest_meter_reading is None
-    mock_statistics.assert_awaited_once()
+    mock_statistics.assert_not_awaited()
 
 
 async def test_meter_reading_succeeds_when_summary_fails(
@@ -128,9 +135,9 @@ async def test_meter_reading_succeeds_when_summary_fails(
     assert data.latest_meter_reading == 123.0
     assert data.latest_meter_day == reading_day
     _, start, end = mock_api_client.async_get_meter_readings.await_args.args
-    assert end == today - timedelta(days=1)
-    assert start == end - timedelta(days=METER_READING_WINDOW_DAYS - 1)
-    mock_statistics.assert_not_awaited()
+    assert end == today
+    assert start == today - timedelta(days=METER_READING_WINDOW_DAYS)
+    mock_statistics.assert_awaited_once()
 
 
 async def test_empty_meter_response_preserves_previous_reading(
@@ -155,6 +162,7 @@ async def test_both_sources_failing_raises_update_failed(
     hass: HomeAssistant,
     config_entry: MockConfigEntry,
     mock_api_client: AsyncMock,
+    mock_statistics: AsyncMock,
 ) -> None:
     """The coordinator fails only when neither source updates."""
     mock_api_client.async_get_weekly_summary.side_effect = EemOnlineApiClientCommunicationError("summary offline")
@@ -206,3 +214,44 @@ async def test_meter_reading_authentication_failure_starts_reauthentication(
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "reauth_confirm"
     assert result["errors"] == {}
+
+
+async def test_long_outage_reaches_back_to_the_last_imported_day(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    mock_api_client: AsyncMock,
+    mock_statistics: AsyncMock,
+) -> None:
+    """After more than a month without updates the fetch starts at the newest imported day."""
+    today = dt_util.now(MADEIRA_TIME_ZONE).date()
+    last_imported = today - timedelta(days=100)
+
+    with patch(
+        "custom_components.eem_online.coordinator.base.async_last_imported_day",
+        new_callable=AsyncMock,
+        return_value=last_imported,
+    ):
+        await _refresh(_coordinator(hass, config_entry, mock_api_client))
+
+    _, start, end = mock_api_client.async_get_meter_readings.await_args.args
+    assert (start, end) == (last_imported, today)
+
+
+async def test_gap_fill_is_bounded(
+    hass: HomeAssistant,
+    config_entry: MockConfigEntry,
+    mock_api_client: AsyncMock,
+    mock_statistics: AsyncMock,
+) -> None:
+    """A very old last import does not trigger an unbounded automatic download."""
+    today = dt_util.now(MADEIRA_TIME_ZONE).date()
+
+    with patch(
+        "custom_components.eem_online.coordinator.base.async_last_imported_day",
+        new_callable=AsyncMock,
+        return_value=today - timedelta(days=MAX_GAP_FILL_DAYS + 50),
+    ):
+        await _refresh(_coordinator(hass, config_entry, mock_api_client))
+
+    _, start, _ = mock_api_client.async_get_meter_readings.await_args.args
+    assert start == today - timedelta(days=MAX_GAP_FILL_DAYS)

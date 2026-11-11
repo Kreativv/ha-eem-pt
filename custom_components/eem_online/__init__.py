@@ -10,14 +10,22 @@ from .api import EemOnlineApiClient
 from .const import CONF_CONTRACT, DOMAIN
 from .coordinator import EemOnlineDataUpdateCoordinator
 from .data import EemOnlineData
+from .service_actions import async_setup_services
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
+    from homeassistant.helpers.typing import ConfigType
 
     from .data import EemOnlineConfigEntry
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the integration's service actions."""
+    await async_setup_services(hass)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: EemOnlineConfigEntry) -> bool:

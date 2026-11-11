@@ -1,15 +1,12 @@
 """Shared fixtures for EEM Online tests."""
 
 from collections.abc import Generator
-from datetime import date
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.eem_online.const import CONF_CONTRACT, DOMAIN
-from custom_components.eem_online.coordinator.statistics import period_start
-from custom_components.eem_online.data import EemOnlineDailyConsumption
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 
@@ -62,13 +59,19 @@ def mock_api_client() -> Generator[AsyncMock]:
 @pytest.fixture
 def mock_statistics() -> Generator[AsyncMock]:
     """Avoid the recorder in tests unrelated to statistic persistence."""
-    result = [EemOnlineDailyConsumption(date(2026, 9, 12), period_start(date(2026, 9, 12)), 3.5)]
-    with patch(
-        "custom_components.eem_online.coordinator.base.async_sync_statistics",
-        new_callable=AsyncMock,
-        return_value=result,
-    ) as sync:
-        yield sync
+    with (
+        patch(
+            "custom_components.eem_online.coordinator.base.async_last_imported_day",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "custom_components.eem_online.coordinator.base.async_import_readings",
+            new_callable=AsyncMock,
+            return_value={},
+        ) as import_readings,
+    ):
+        yield import_readings
 
 
 @pytest.fixture

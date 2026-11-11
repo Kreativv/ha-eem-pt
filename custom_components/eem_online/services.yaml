@@ -1,0 +1,18 @@
+import_history:
+  name: Import history
+  description: Rebuilds the Energy statistics of an EEM contract from its daily meter readings.
+  fields:
+    config_entry_id:
+      name: EEM Online entry
+      description: The EEM contract whose history to import.
+      required: true
+      selector:
+        config_entry:
+          integration: eem_online
+    start_date:
+      name: Start date
+      description: First day to import.
+      required: true
+      example: "2026-01-01"
+      selector:
+        date:
